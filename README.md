@@ -17,7 +17,7 @@ This leads to repeated mistakes, redundant conversations, and lost productivity.
 This system gives Claude **persistent memory** across sessions:
 
 1. **Convert** your `.jsonl` transcripts to readable markdown
-2. **Extract** learnings using Claude sub-agents that process transcripts in parallel
+2. **Extract** learnings using Claude sub-agents that process transcripts
 3. **Embed** learnings with a local embedding model (nomic-embed-text)
 4. **Inject** relevant memories via Claude Code hooks that fire on every prompt
 
@@ -44,7 +44,6 @@ This system gives Claude **persistent memory** across sessions:
 - [Ollama](https://ollama.com/) (for local embeddings)
 - Python 3.8+ (for the memory daemon)
 - Claude Code CLI
-- **For auto-extraction**: Either `ANTHROPIC_API_KEY` env var OR Ollama with a capable model (llama3, mistral, etc.)
 
 ### 1. Install Dependencies
 
@@ -55,16 +54,9 @@ curl -fsSL https://ollama.com/install.sh | sh
 # Pull the embedding model
 ollama pull nomic-embed-text
 
-# Optional: Pull a model for auto-extraction (if not using Anthropic API)
-ollama pull llama3
-
 # Clone this repo
 git clone https://github.com/zacdcook/claude-code-semantic-memory.git
 cd claude-code-semantic-memory
-
-# Set up scripts directory for hooks
-mkdir -p ~/.claude/memory-scripts
-cp scripts/extract-from-transcript.py ~/.claude/memory-scripts/
 ```
 
 ### 2. Convert Your Transcripts
@@ -88,9 +80,9 @@ claude
 Then paste the contents of `prompts/extract-learnings.md`. Claude will:
 
 1. List all `.md` files in your converted transcripts folder
-2. Dispatch 5 sub-agents in parallel to process batches
-3. Each sub-agent extracts structured learnings as JSONL
-4. Consolidate and deduplicate across all sessions
+2. Dispatch sub-agents in parallel to process batches
+3. Each sub-agent extracts structured learnings
+4. Store learnings via the daemon's `/store` endpoint
 5. Output to `~/extracted-learnings.jsonl`
 
 ### 4. Start the Memory Daemon
@@ -136,7 +128,7 @@ chmod +x ~/.claude/hooks/*.sh
 Now:
 - Every prompt automatically queries memory and injects relevant learnings
 - During iteration, Claude's thinking is analyzed for additional relevant memories
-- When context compacts, the full transcript is exported and learnings are auto-extracted
+- When context compacts, the transcript is exported and a sub-agent extracts learnings
 
 ---
 
@@ -193,7 +185,7 @@ When context compacts, the PreCompact hook exports the transcript and outputs in
 2. Extracts learnings (solutions, gotchas, patterns, etc.)
 3. Stores each learning via the daemon's `/store` endpoint
 
-This keeps everything within Claude Code - no external API calls or local models needed for extraction. The sub-agent uses the Task tool to run in parallel without blocking the main session.
+This keeps everything within Claude Code - no external API calls needed. The sub-agent uses the Task tool to run without blocking.
 
 ### Learning Types
 
@@ -213,8 +205,7 @@ This keeps everything within Claude Code - no external API calls or local models
 | **Hooks over CLAUDE.md** | Hooks fire deterministically; CLAUDE.md instructions are suggestions Claude may skip under cognitive load |
 | **nomic-embed-text over MiniLM** | 8K token context vs 256 tokens — MiniLM truncates 75% of longer conversation turns |
 | **0.45 similarity threshold** | Permissive enough to catch semantically related content, not so low it floods with noise |
-| **Sub-agent extraction** | Parallelizes processing; handles hundreds of transcripts without manual batching |
-| **JSONL output format** | One learning per line; easy to stream, append, and import |
+| **Sub-agent extraction** | Uses Claude Code's own capabilities; no external API keys or local LLMs needed |
 
 ### Database Schema
 
@@ -238,25 +229,24 @@ CREATE INDEX idx_learnings_type ON learnings(type);
 ## File Structure
 
 ```
-claude-code-memory/
+claude-code-semantic-memory/
 ├── README.md
 ├── scripts/
-│   ├── jsonl-to-markdown.js      # Convert transcripts
-│   ├── import-learnings.py       # Import JSONL to database
-│   └── extract-from-transcript.py # Auto-extract learnings via LLM
+│   ├── jsonl-to-markdown.js    # Convert transcripts
+│   └── import-learnings.py     # Import JSONL to database
 ├── prompts/
-│   └── extract-learnings.md      # Prompt for manual sub-agent extraction
+│   └── extract-learnings.md    # Prompt for sub-agent extraction
 ├── daemon/
-│   ├── server.py                 # Flask API server
+│   ├── server.py               # Flask API server
 │   ├── requirements.txt
-│   └── config.json               # Similarity thresholds, model config
+│   └── config.json             # Similarity thresholds, model config
 ├── hooks/
-│   ├── session-start.sh          # Check daemon, warn orphans
-│   ├── user-prompt-submit.sh     # Memory injection on prompts
-│   ├── pre-tool-use.sh           # Memory injection during iteration
-│   └── pre-compact.sh            # Auto-export and extract on compaction
+│   ├── session-start.sh        # Check daemon, warn orphans
+│   ├── user-prompt-submit.sh   # Memory injection on prompts
+│   ├── pre-tool-use.sh         # Memory injection during iteration
+│   └── pre-compact.sh          # Auto-export and dispatch sub-agent
 └── examples/
-    └── sample-learnings.jsonl    # Example output format
+    └── sample-learnings.jsonl  # Example output format
 ```
 
 ---
@@ -308,18 +298,13 @@ The hook will query the remote daemon instead of localhost.
 ## Troubleshooting
 
 ### Hook not firing
-- Check hook is executable: `chmod +x ~/.claude/hooks/UserPromptSubmit.sh`
+- Check hook is executable: `chmod +x ~/.claude/hooks/*.sh`
 - Verify daemon is running: `curl http://localhost:8741/health`
 
 ### No memories returned
 - Check similarity threshold isn't too high
-- Verify learnings were imported: query the database directly
+- Verify learnings were imported: `curl http://localhost:8741/stats`
 - Try a more specific query
-
-### Auto-extraction not working
-- Verify `ANTHROPIC_API_KEY` is set, OR Ollama has a capable model (`ollama list`)
-- Check extract script exists: `ls ~/.claude/memory-scripts/extract-from-transcript.py`
-- Test manually: `python ~/.claude/memory-scripts/extract-from-transcript.py <transcript.md>`
 
 ### Slow embedding
 - Ensure Ollama is using GPU: `ollama ps` should show CUDA
@@ -329,7 +314,6 @@ The hook will query the remote daemon instead of localhost.
 
 ## Credits
 
-- [Tobi Lütke's QMD](https://github.com/tobi/qmd) — Inspiration for hybrid search approaches
 - [Ollama](https://ollama.com/) — Local embedding infrastructure
 - [nomic-embed-text](https://huggingface.co/nomic-ai/nomic-embed-text-v1.5) — Embedding model with 8K context
 
