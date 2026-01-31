@@ -109,6 +109,9 @@ python scripts/import-learnings.py ~/extracted-learnings.jsonl
 Copy all hooks to your Claude Code hooks directory:
 
 ```bash
+# Create hooks directory if needed
+mkdir -p ~/.claude/hooks
+
 # Session initialization
 cp hooks/session-start.sh ~/.claude/hooks/SessionStart.sh
 
@@ -123,6 +126,65 @@ cp hooks/pre-compact.sh ~/.claude/hooks/PreCompact.sh
 
 # Make executable
 chmod +x ~/.claude/hooks/*.sh
+```
+
+### 7. Register Hooks in settings.json
+
+**CRITICAL**: Claude Code only runs hooks that are registered in `~/.claude/settings.json`. Add or merge this configuration:
+
+```json
+{
+  "hooks": {
+    "SessionStart": [
+      {
+        "matcher": "*",
+        "hooks": [
+          {
+            "type": "command",
+            "command": "bash ~/.claude/hooks/SessionStart.sh",
+            "timeout": 5
+          }
+        ]
+      }
+    ],
+    "UserPromptSubmit": [
+      {
+        "matcher": "*",
+        "hooks": [
+          {
+            "type": "command",
+            "command": "bash ~/.claude/hooks/UserPromptSubmit.sh",
+            "timeout": 3
+          }
+        ]
+      }
+    ],
+    "PreToolUse": [
+      {
+        "matcher": "*",
+        "hooks": [
+          {
+            "type": "command",
+            "command": "bash ~/.claude/hooks/PreToolUse.sh",
+            "timeout": 3
+          }
+        ]
+      }
+    ],
+    "PreCompact": [
+      {
+        "matcher": "*",
+        "hooks": [
+          {
+            "type": "command",
+            "command": "bash ~/.claude/hooks/PreCompact.sh",
+            "timeout": 10
+          }
+        ]
+      }
+    ]
+  }
+}
 ```
 
 Now:

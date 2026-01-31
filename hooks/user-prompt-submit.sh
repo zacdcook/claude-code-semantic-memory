@@ -22,8 +22,8 @@ RECALL_TIMEOUT=2
 # Read input from stdin
 INPUT=$(cat)
 
-# Extract user prompt
-QUERY=$(echo "$INPUT" | jq -r '.userPrompt // empty' 2>/dev/null)
+# FIXED: Claude Code sends "prompt" not "userPrompt"
+QUERY=$(echo "$INPUT" | jq -r '.prompt // empty' 2>/dev/null)
 
 if [ -z "$QUERY" ]; then
     exit 0
@@ -59,8 +59,10 @@ format_memories() {
 FORMATTED=$(format_memories)
 
 # Output for Claude Code hook system
+# CRITICAL: hookEventName is REQUIRED for additionalContext to be processed by Claude Code
 jq -n --arg ctx "$FORMATTED" '{
     "hookSpecificOutput": {
+        "hookEventName": "UserPromptSubmit",
         "additionalContext": $ctx
     }
 }'
