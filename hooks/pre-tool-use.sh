@@ -162,10 +162,12 @@ if [ -z "$FORMATTED" ]; then
 fi
 
 # Output for Claude Code hook system
+# CRITICAL: hookEventName is REQUIRED for additionalContext to be processed by Claude Code
 python3 -c "
 import json
 print(json.dumps({
     'hookSpecificOutput': {
+        'hookEventName': 'PreToolUse',
         'additionalContext': '''$FORMATTED'''
     }
 }))

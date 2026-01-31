@@ -59,8 +59,10 @@ format_memories() {
 FORMATTED=$(format_memories)
 
 # Output for Claude Code hook system
+# CRITICAL: hookEventName is REQUIRED for additionalContext to be processed by Claude Code
 jq -n --arg ctx "$FORMATTED" '{
     "hookSpecificOutput": {
+        "hookEventName": "UserPromptSubmit",
         "additionalContext": $ctx
     }
 }'
