@@ -84,12 +84,13 @@ fi
 THINKING_HASH=$(echo "$THINKING" | md5sum | cut -d' ' -f1)
 
 if [ -f "$STATE_FILE" ]; then
-    LAST_HASH=$(python3 -c "
-import json
+    # Use environment variables to safely pass values to Python
+    LAST_HASH=$(STATE_FILE="$STATE_FILE" SESSION_ID="$SESSION_ID" python3 -c "
+import json, os
 try:
-    with open('$STATE_FILE') as f:
+    with open(os.environ['STATE_FILE']) as f:
         state = json.load(f)
-    print(state.get('$SESSION_ID', {}).get('hash', ''))
+    print(state.get(os.environ['SESSION_ID'], {}).get('hash', ''))
 except:
     print('')
 " 2>/dev/null || echo "")
@@ -124,19 +125,22 @@ except:
 
 COUNT=$(echo "$MEMORIES" | python3 -c "import sys,json; print(len(json.load(sys.stdin)))" 2>/dev/null || echo "0")
 
-# Update state file with new hash
+# Update state file with new hash - use environment variables for safe passing
 mkdir -p "$(dirname "$STATE_FILE")"
-python3 -c "
-import json
+STATE_FILE="$STATE_FILE" SESSION_ID="$SESSION_ID" THINKING_HASH="$THINKING_HASH" python3 -c "
+import json, os
+state_file = os.environ['STATE_FILE']
+session_id = os.environ['SESSION_ID']
+thinking_hash = os.environ['THINKING_HASH']
 try:
-    with open('$STATE_FILE') as f:
+    with open(state_file) as f:
         state = json.load(f)
 except:
     state = {}
 
-state['$SESSION_ID'] = {'hash': '$THINKING_HASH'}
+state[session_id] = {'hash': thinking_hash}
 
-with open('$STATE_FILE', 'w') as f:
+with open(state_file, 'w') as f:
     json.dump(state, f)
 " 2>/dev/null || true
 
@@ -145,9 +149,10 @@ if [ "$COUNT" -eq 0 ] || [ "$MEMORIES" = "null" ] || [ "$MEMORIES" = "[]" ]; the
 fi
 
 # Format as XML for injection
-FORMATTED=$(python3 -c "
+# IMPORTANT: Use stdin to pass JSON - shell interpolation breaks on special chars
+FORMATTED=$(echo "$MEMORIES" | python3 -c "
 import sys, json
-memories = json.loads('$MEMORIES')
+memories = json.load(sys.stdin)
 print('<recalled-learnings source=\"thinking-injection\">')
 for m in memories:
     mtype = m.get('type', 'UNKNOWN')
@@ -163,12 +168,14 @@ fi
 
 # Output for Claude Code hook system
 # CRITICAL: hookEventName is REQUIRED for additionalContext to be processed by Claude Code
-python3 -c "
-import json
+# IMPORTANT: Use stdin to pass formatted content - shell interpolation breaks on special chars
+echo "$FORMATTED" | python3 -c "
+import sys, json
+formatted = sys.stdin.read()
 print(json.dumps({
     'hookSpecificOutput': {
         'hookEventName': 'PreToolUse',
-        'additionalContext': '''$FORMATTED'''
+        'additionalContext': formatted
     }
 }))
 "
