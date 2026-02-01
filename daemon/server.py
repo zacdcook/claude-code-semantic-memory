@@ -28,6 +28,36 @@ with open(CONFIG_PATH) as f:
 DB_PATH = Path(__file__).parent / "semantic-memory.db"
 OLLAMA_URL = "http://localhost:11434/api/embeddings"
 
+def migrate_db():
+    """Add new columns to existing database if needed."""
+    conn = sqlite3.connect(DB_PATH)
+    cursor = conn.cursor()
+
+    # Get existing columns
+    cursor.execute("PRAGMA table_info(learnings)")
+    existing_cols = {row[1] for row in cursor.fetchall()}
+
+    # New columns to add (column_name, type, default)
+    new_columns = [
+        ("source_type", "TEXT", None),
+        ("scope", "TEXT", None),
+        ("tags", "TEXT", None),
+        ("related_files", "TEXT", None),
+        ("verified_at", "TIMESTAMP", None),
+        ("superseded_by", "INTEGER", None),
+        ("contradiction_count", "INTEGER", "0"),
+        ("derived_from", "INTEGER", None),
+    ]
+
+    for col_name, col_type, default in new_columns:
+        if col_name not in existing_cols:
+            default_clause = f" DEFAULT {default}" if default else ""
+            cursor.execute(f"ALTER TABLE learnings ADD COLUMN {col_name} {col_type}{default_clause}")
+            print(f"  Added column: {col_name}")
+
+    conn.commit()
+    conn.close()
+
 def init_db():
     """Initialize the database schema."""
     conn = sqlite3.connect(DB_PATH)
@@ -43,7 +73,17 @@ def init_db():
             embedding BLOB NOT NULL,
             confidence REAL DEFAULT 0.9,
             session_source TEXT,
-            created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP
+            created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP,
+            -- Metadata for trust decisions
+            source_type TEXT,           -- user_explicit, user_preference, observed, inferred
+            scope TEXT,                 -- permanent, may_change, temporary
+            tags TEXT,                  -- JSON array of categories
+            related_files TEXT,         -- JSON array of file paths
+            -- Future: lifecycle tracking
+            verified_at TIMESTAMP,
+            superseded_by INTEGER,
+            contradiction_count INTEGER DEFAULT 0,
+            derived_from INTEGER
         )
     """)
     cursor.execute("CREATE INDEX IF NOT EXISTS idx_learnings_type ON learnings(type)")
@@ -118,15 +158,20 @@ def store():
             })
     
     cursor.execute("""
-        INSERT INTO learnings (type, content, context, embedding, confidence, session_source)
-        VALUES (?, ?, ?, ?, ?, ?)
+        INSERT INTO learnings (type, content, context, embedding, confidence, session_source,
+                               source_type, scope, tags, related_files)
+        VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
     """, (
         data["type"],
         data["content"],
         data.get("context"),
         json.dumps(embedding),
         data.get("confidence", 0.9),
-        data.get("session_source")
+        data.get("session_source"),
+        data.get("source_type"),
+        data.get("scope"),
+        json.dumps(data.get("tags")) if data.get("tags") else None,
+        json.dumps(data.get("related_files")) if data.get("related_files") else None
     ))
     
     learning_id = cursor.lastrowid
@@ -153,13 +198,17 @@ def recall():
     
     conn = sqlite3.connect(DB_PATH)
     cursor = conn.cursor()
-    cursor.execute("SELECT id, type, content, context, embedding, confidence FROM learnings")
-    
+    cursor.execute("""
+        SELECT id, type, content, context, embedding, confidence,
+               created_at, session_source, source_type, scope, tags, related_files
+        FROM learnings
+    """)
+
     results = []
     for row in cursor.fetchall():
         stored_embedding = json.loads(row[4])
         sim = cosine_similarity(query_embedding, stored_embedding)
-        
+
         if sim >= min_similarity:
             results.append({
                 "id": row[0],
@@ -167,7 +216,14 @@ def recall():
                 "content": row[2],
                 "context": row[3],
                 "confidence": row[5],
-                "similarity": round(sim, 4)
+                "similarity": round(sim, 4),
+                # Trust metadata
+                "created_at": row[6],
+                "session_source": row[7],
+                "source_type": row[8],
+                "scope": row[9],
+                "tags": json.loads(row[10]) if row[10] else None,
+                "related_files": json.loads(row[11]) if row[11] else None
             })
     
     conn.close()
@@ -199,6 +255,7 @@ def stats():
 
 if __name__ == "__main__":
     init_db()
+    migrate_db()  # Add new columns to existing DB if needed
     print(f"Memory daemon starting on port {CONFIG['port']}")
     print(f"Database: {DB_PATH}")
     print(f"Model: {CONFIG['embeddingModel']}")
