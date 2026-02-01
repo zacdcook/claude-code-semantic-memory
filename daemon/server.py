@@ -3,8 +3,10 @@
 Semantic Memory Daemon for Claude Code
 
 A Flask server that provides:
-- POST /store - Embed and store a learning
-- POST /recall - Query for relevant memories by cosine similarity
+- POST /store - Embed and store a learning (optional: supersedes=<id> to replace an old learning)
+- POST /recall - Query for relevant memories by cosine similarity (excludes superseded)
+- POST /supersede - Mark a learning as superseded by another
+- GET /stats - Database statistics including superseded counts
 - GET /health - Health check
 
 Requires Ollama running with nomic-embed-text model.
@@ -173,12 +175,30 @@ def store():
         json.dumps(data.get("tags")) if data.get("tags") else None,
         json.dumps(data.get("related_files")) if data.get("related_files") else None
     ))
-    
+
     learning_id = cursor.lastrowid
+
+    # Handle supersession if specified
+    supersedes_id = data.get("supersedes")
+    superseded_content = None
+    if supersedes_id:
+        cursor.execute("SELECT id, content FROM learnings WHERE id = ?", (supersedes_id,))
+        old = cursor.fetchone()
+        if old:
+            cursor.execute(
+                "UPDATE learnings SET superseded_by = ? WHERE id = ?",
+                (learning_id, supersedes_id)
+            )
+            superseded_content = old[1][:100] + "..." if len(old[1]) > 100 else old[1]
+
     conn.commit()
     conn.close()
-    
-    return jsonify({"status": "stored", "id": learning_id})
+
+    response = {"status": "stored", "id": learning_id}
+    if supersedes_id and superseded_content:
+        response["superseded"] = {"id": supersedes_id, "content": superseded_content}
+
+    return jsonify(response)
 
 @app.route("/recall", methods=["POST"])
 def recall():
@@ -202,6 +222,7 @@ def recall():
         SELECT id, type, content, context, embedding, confidence,
                created_at, session_source, source_type, scope, tags, related_files
         FROM learnings
+        WHERE superseded_by IS NULL
     """)
 
     results = []
@@ -234,23 +255,90 @@ def recall():
     
     return jsonify({"memories": results, "count": len(results)})
 
+@app.route("/supersede", methods=["POST"])
+def supersede():
+    """Mark a learning as superseded by another.
+
+    This filters the old learning from /recall results while preserving history.
+    Use when a newer learning corrects or replaces an older one.
+    """
+    data = request.json
+
+    if "old_id" not in data or "new_id" not in data:
+        return jsonify({"error": "Missing required fields: old_id, new_id"}), 400
+
+    old_id = data["old_id"]
+    new_id = data["new_id"]
+
+    if old_id == new_id:
+        return jsonify({"error": "A learning cannot supersede itself"}), 400
+
+    conn = sqlite3.connect(DB_PATH)
+    cursor = conn.cursor()
+
+    # Verify both learnings exist
+    cursor.execute("SELECT id, content FROM learnings WHERE id = ?", (old_id,))
+    old_learning = cursor.fetchone()
+    if not old_learning:
+        conn.close()
+        return jsonify({"error": f"Learning {old_id} not found"}), 404
+
+    cursor.execute("SELECT id, content FROM learnings WHERE id = ?", (new_id,))
+    new_learning = cursor.fetchone()
+    if not new_learning:
+        conn.close()
+        return jsonify({"error": f"Learning {new_id} not found"}), 404
+
+    # Check if already superseded
+    cursor.execute("SELECT superseded_by FROM learnings WHERE id = ?", (old_id,))
+    current = cursor.fetchone()[0]
+    if current is not None:
+        conn.close()
+        return jsonify({
+            "status": "already_superseded",
+            "old_id": old_id,
+            "previously_superseded_by": current
+        })
+
+    # Mark as superseded
+    cursor.execute(
+        "UPDATE learnings SET superseded_by = ? WHERE id = ?",
+        (new_id, old_id)
+    )
+
+    conn.commit()
+    conn.close()
+
+    return jsonify({
+        "status": "superseded",
+        "old_id": old_id,
+        "new_id": new_id,
+        "old_content": old_learning[1][:100] + "..." if len(old_learning[1]) > 100 else old_learning[1],
+        "new_content": new_learning[1][:100] + "..." if len(new_learning[1]) > 100 else new_learning[1]
+    })
+
 @app.route("/stats", methods=["GET"])
 def stats():
     """Get database statistics."""
     conn = sqlite3.connect(DB_PATH)
     cursor = conn.cursor()
-    
+
     cursor.execute("SELECT COUNT(*) FROM learnings")
     total = cursor.fetchone()[0]
-    
+
     cursor.execute("SELECT type, COUNT(*) FROM learnings GROUP BY type")
     by_type = dict(cursor.fetchall())
-    
+
+    cursor.execute("SELECT COUNT(*) FROM learnings WHERE superseded_by IS NOT NULL")
+    superseded_count = cursor.fetchone()[0]
+
     conn.close()
-    
+
     return jsonify({
         "total_learnings": total,
-        "by_type": by_type
+        "by_type": by_type,
+        "superseded_count": superseded_count,
+        "active_learnings": total - superseded_count
     })
 
 if __name__ == "__main__":
